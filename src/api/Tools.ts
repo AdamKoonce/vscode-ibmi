@@ -180,11 +180,73 @@ export namespace Tools {
    * Transforms a normalized path into an OS specific path.
    * - Replaces ~ with the current home directory
    * - Changes all / to \ on Windows
-   * @param path 
-   * @returns 
+   * @param path
+   * @returns
    */
   export function resolvePath(path: string) {
     path = path.replace("~", os.homedir());
     return process.platform === "win32" ? path.replaceAll('/', '\\') : path;
+  }
+
+  /**
+   * Determines if CCSID conversion should be applied based on configuration and source file CCSID.
+   * @param sourceCcsid The CCSID of the source file
+   * @param config Connection configuration containing conversion settings
+   * @returns {requiresConversion, targetCcsid} - whether conversion is required and the target CCSID to use
+   */
+  export function determineCcsidConversion(sourceCcsid: number, config: { ccsidConversionEnabled?: boolean, ccsidConvertFrom?: string, ccsidConvertTo?: string }): { requiresConversion: boolean, targetCcsid: number } {
+    const noConversion = { requiresConversion: false, targetCcsid: 0 };
+
+    // conversion must be enabled
+    if (!config.ccsidConversionEnabled) {
+      return noConversion;
+    }
+
+    const configuredSourceCcsid = Number(config.ccsidConvertFrom) || 0;
+    const configuredTargetCcsid = Number(config.ccsidConvertTo) || 0;
+
+    // both source and target must be configured
+    if (configuredSourceCcsid === 0 || configuredTargetCcsid === 0) {
+      return noConversion;
+    }
+
+    // source CCSID must match configured value
+    if (sourceCcsid != configuredSourceCcsid) {
+      return noConversion;
+    }
+
+    return { requiresConversion: true, targetCcsid: configuredTargetCcsid };
+  }
+
+  export function ensureFullPath(inputPath: string, remoteHomeDirectory: string | undefined): string {
+    // Handle ~ expansion with remote home directory
+    // Only expand ~ when it's followed by / or is the entire path
+    if (inputPath === '~' || inputPath.startsWith('~/')) {
+      if (remoteHomeDirectory) {
+        inputPath = inputPath.replace('~', remoteHomeDirectory);
+      } else {
+        // If no home directory is provided, just remove the ~ and treat as relative
+        inputPath = inputPath.substring(1);
+        // Remove leading slash if present after removing ~
+        if (inputPath.startsWith('/')) {
+          inputPath = inputPath.substring(1);
+        }
+      }
+    }
+
+    // Check if the path is already absolute (starts with /)
+    if (inputPath.startsWith('/')) {
+      return inputPath;
+    }
+
+    // If not absolute, prepend the remote home directory if available
+    if (remoteHomeDirectory) {
+      // Use path.posix.join to ensure forward slashes for IFS paths
+      return path.posix.join(remoteHomeDirectory, inputPath);
+    }
+
+    // If no home directory is provided, return the path as-is
+    // (it will remain relative)
+    return inputPath;
   }
 }

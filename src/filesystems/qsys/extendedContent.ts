@@ -2,8 +2,11 @@ import fs from "fs";
 import tmp from "tmp";
 import util from "util";
 import vscode from "vscode";
+import IBMi from "../../api/IBMi";
+import { Tools } from "../../api/Tools";
 import { instance } from "../../instantiate";
 import { getAliasName, SourceDateHandler } from "./sourceDateHandler";
+import { CommandResult } from "../../api/types";
 
 const tmpFile = util.promisify(tmp.file);
 const writeFileAsync = util.promisify(fs.writeFile);
@@ -23,9 +26,8 @@ export class ExtendedIBMiContent {
   async downloadMemberContentWithDates(uri: vscode.Uri) {
     const connection = instance.getConnection();
     if (connection) {
-      const content = connection.getContent();
       const config = connection.getConfig();
-      const tempLib = config.tempLibrary;
+      const tempLib = "QTEMP";
       const alias = getAliasName(uri);
       const aliasPath = `${tempLib}.${alias}`;
       const { library, file, name } = connection.parserMemberPath(uri.path);
@@ -77,16 +79,17 @@ export class ExtendedIBMiContent {
     let recordLength: number = DEFAULT_RECORD_LENGTH;
 
     if (connection) {
-      const result = await connection.runSQL(`select length(SRCDTA) as LENGTH from ${aliasPath} limit 1`);
-      if (result.length > 0) {
-        recordLength = Number(result[0].LENGTH);
+      const [result] = await connection.runSQL(`select length(SRCDTA) as LENGTH from ${aliasPath} limit 1`);
+      if (result) {
+        recordLength = Number(result.LENGTH);
       } else {
-        const result = await connection.runSQL(`select row_length-12 as LENGTH
-                                               from QSYS2.SYSTABLES
-                                              where SYSTEM_TABLE_SCHEMA = '${connection.sysNameInAmerican(lib)}' and SYSTEM_TABLE_NAME = '${connection.sysNameInAmerican(spf)}'
-                                              limit 1`);
-        if (result.length > 0) {
-          recordLength = Number(result[0].LENGTH);
+        const [result] = await connection.runSQL([
+          `@DSPFD FILE(${lib}/${spf}) TYPE(*ATR) OUTPUT(*OUTFILE) FILEATR(*PF) OUTFILE(QTEMP/PFS)`,
+          /* sql */
+          `select PHMXRL - 12 as LENGTH from QTEMP.PFS limit 1`
+        ]);
+        if (result) {
+          recordLength = Number(result.LENGTH);
         }
       }
     }
@@ -105,7 +108,7 @@ export class ExtendedIBMiContent {
       const config = connection.getConfig();
       const setccsid = connection.remoteFeatures.setccsid;
 
-      const tempLib = config.tempLibrary;
+      const tempLib = "QTEMP";
       const alias = getAliasName(uri);
       const aliasPath = `${tempLib}.${alias}`;
 
@@ -171,10 +174,27 @@ export class ExtendedIBMiContent {
           await connection.sendCommand({ command: `${setccsid} 1208 ${tempRmt}` });
         }
 
-        const insertResult = await connection.runCommand({
-          command: `QSYS/RUNSQLSTM SRCSTMF('${tempRmt}') COMMIT(*NONE) NAMING(*SQL)`,
-          noLibList: true
-        });
+        // Fetch source file CCSID and determine if conversion is needed
+        const memberPath = { library, name: file, member: name };
+        const sourceCcsid = await connection.getFileCcsid(memberPath);
+        const {requiresConversion, targetCcsid} = Tools.determineCcsidConversion(sourceCcsid, config);
+
+        let insertResult: CommandResult = { code: 0, stdout: '', stderr: '' };
+        if (requiresConversion) {
+          await connection.runSQL([
+            `@QSYS/CPY OBJ('${tempRmt}') TOOBJ('${tempRmt}') TOCCSID(${targetCcsid}) DTAFMT(*TEXT) REPLACE(*YES)`
+          ].join("\n")).catch(e => {
+            insertResult.code = -1;
+            insertResult.stderr = String(e);
+          });
+        }
+
+        if (insertResult.code === 0) {
+          insertResult = await connection.runCommand({
+            command: `QSYS/RUNSQLSTM SRCSTMF('${tempRmt}') COMMIT(*NONE) NAMING(*SQL)`,
+            noLibList: true
+          });
+        }
 
         if (insertResult.code !== 0) {
           throw new Error(`Failed to save member: ` + insertResult.stderr);

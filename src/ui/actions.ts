@@ -35,7 +35,7 @@ export type ActionTarget = {
 }
 
 const actionUsed: Map<string, number> = new Map;
-const PARM_REGEX = / (PNLGRP|OBJ|PGM|MODULE|FILE|MENU)\((?<object>.+?)\)/;
+const PARM_REGEX = /(^|\s+)(PNLGRP|OBJ|PGM|MODULE|FILE|MENU)\((?<object>.+?)\)/;
 
 export function registerActionTools(context: vscode.ExtensionContext) {
   context.subscriptions.push(
@@ -343,7 +343,7 @@ export async function runAction(instance: Instance, uris: vscode.Uri | vscode.Ur
                             file: `${lib}/${srcpf}`,
                           });
 
-                          const copyFromStreamfile = content.toCl(`CPYFRMSTMF`, {
+                          const copyFromStreamfile = content.toCl(`QSYS/CPYFRMSTMF`, {
                             fromstmf: fullPath,
                             tombr: `'${Tools.qualifyPath(lib, srcpf, evfeventInfo.object)}'`,
                             mbropt: `*REPLACE`,
@@ -382,9 +382,9 @@ export async function runAction(instance: Instance, uris: vscode.Uri | vscode.Ur
                           target.hasRun = true;
                           const isIleCommand = environment === `ile`;
 
-                          const useLocalEvfevent =
-                            fromWorkspace && chosenAction.postDownload &&
-                            (chosenAction.postDownload.includes(`.evfevent`) || chosenAction.postDownload.includes(`.evfevent/`));
+                          const postDownload = chosenAction.postDownload?.map(path => variables.expand(path)) || [];
+                          const useLocalEvfevent = fromWorkspace && postDownload.length &&
+                            (postDownload.includes(`.evfevent`) || postDownload.includes(`.evfevent/`));
 
                           const possibleObjects = getObjectsFromJoblog(commandResult.stderr) || getObjectFromCommand(commandResult.command);
                           if (isIleCommand && possibleObjects) {
@@ -428,14 +428,14 @@ export async function runAction(instance: Instance, uris: vscode.Uri | vscode.Ur
                             await outputToFile(connection, chosenAction.outputToFile, variables, target.output);
                           }
 
-                          if (chosenAction.type === `file` && chosenAction.postDownload?.length) {
+                          if (chosenAction.type === `file` && postDownload?.length) {
                             if (fromWorkspace) {
                               const remoteDir = remoteCwd;
                               const localDir = fromWorkspace.uri;
 
                               const postDownloads: { type: vscode.FileType, localPath: string, remotePath: string }[] = [];
                               const downloadDirectories = new Set<vscode.Uri>();
-                              for (const download of chosenAction.postDownload) {
+                              for (const download of postDownload) {
                                 const remotePath = path.posix.join(remoteDir, download);
                                 const localPath = vscode.Uri.joinPath(localDir, download).path;
 
@@ -498,7 +498,7 @@ export async function runAction(instance: Instance, uris: vscode.Uri | vscode.Ur
                               await Promise.all(downloads)
                                 .then(async () => {
                                   // Done!
-                                  writeEmitter.fire(`Downloaded files as part of Action: ${chosenAction.postDownload!.join(`, `)}\n`);
+                                  writeEmitter.fire(`Downloaded files as part of Action: ${postDownload!.join(`, `)}\n`);
 
                                   // Process locally downloaded evfevent files:
                                   if (useLocalEvfevent) {
